@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import tkinter as tk
@@ -670,11 +671,12 @@ def draw_rosette(kind, radius, count, height, extra=None, show=True, curve_only=
 class RosetteGeneratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Rosette Generator (Matplotlib)")
+        self.root.title("Rosette Generator using Matplotlib")
 
         self.option_var = tk.StringVar(value=ROSETTE_TYPES[0])
         self.field_vars = {}
         self.last_rosette_config = None
+        self.defaults = self._load_defaults()
 
         self.main_frame = ttk.Frame(root, padding=10)
         self.main_frame.grid(row=0, column=0, sticky="nsew")
@@ -706,7 +708,10 @@ class RosetteGeneratorApp:
         export_btn.pack(side="left", padx=(0, 6))
 
         close_btn = ttk.Button(button_row, text="Close", command=self.root.destroy)
-        close_btn.pack(side="left")
+        close_btn.pack(side="left", padx=(0, 6))
+
+        defaults_btn = ttk.Button(button_row, text="Defaults", command=self.on_defaults)
+        defaults_btn.pack(side="left")
 
         self.on_option_changed()
 
@@ -722,62 +727,129 @@ class RosetteGeneratorApp:
         entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
         self.field_vars[label] = var
 
+    def _defaults_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "rosette_defaults.json")
+
+    def _load_defaults(self):
+        path = self._defaults_path()
+        if os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return {
+                    "outer_radius": float(data.get("outer_radius", 50)),
+                    "amplitude": float(data.get("amplitude", 5)),
+                    "num_segments": int(data.get("num_segments", 12)),
+                }
+            except Exception:
+                pass
+        return {"outer_radius": 50.0, "amplitude": 5.0, "num_segments": 12}
+
+    def on_defaults(self):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Defaults")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(frame, text="Outer Radius:").grid(row=0, column=0, sticky="w", pady=4)
+        radius_var = tk.StringVar(value=str(self.defaults["outer_radius"]))
+        ttk.Entry(frame, textvariable=radius_var, width=14).grid(row=0, column=1, padx=(8, 0), pady=4)
+
+        ttk.Label(frame, text="Amplitude:").grid(row=1, column=0, sticky="w", pady=4)
+        amplitude_var = tk.StringVar(value=str(self.defaults["amplitude"]))
+        ttk.Entry(frame, textvariable=amplitude_var, width=14).grid(row=1, column=1, padx=(8, 0), pady=4)
+
+        ttk.Label(frame, text="Number of Segments:").grid(row=2, column=0, sticky="w", pady=4)
+        segments_var = tk.StringVar(value=str(self.defaults["num_segments"]))
+        ttk.Entry(frame, textvariable=segments_var, width=14).grid(row=2, column=1, padx=(8, 0), pady=4)
+
+        def on_save():
+            try:
+                new_radius = float(radius_var.get())
+                new_amplitude = float(amplitude_var.get())
+                new_segments = int(segments_var.get())
+            except ValueError:
+                messagebox.showerror("Invalid Input", "Please enter valid numbers.", parent=dialog)
+                return
+            self.defaults["outer_radius"] = new_radius
+            self.defaults["amplitude"] = new_amplitude
+            self.defaults["num_segments"] = new_segments
+            path = self._defaults_path()
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(self.defaults, f, indent=2)
+            except Exception as exc:
+                messagebox.showerror("Save Failed", str(exc), parent=dialog)
+                return
+            dialog.destroy()
+
+        btn_row = ttk.Frame(frame)
+        btn_row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btn_row, text="Save", command=on_save).pack(side="left", padx=(0, 6))
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left")
+
     def on_option_changed(self, _event=None):
         selected = self.option_var.get()
         self.clear_dynamic_fields()
+        r = str(self.defaults["outer_radius"])
+        a = str(self.defaults["amplitude"])
+        n = str(self.defaults["num_segments"])
 
         if selected == "Bump":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Number of Bumps")
-            self.add_field(2, "Height of Bumps")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "Dip":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Number of Dips")
-            self.add_field(2, "Height of Dips")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "Arch":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Number of Arches")
-            self.add_field(2, "Height of Arches")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "Concave+Convex":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Number of Waves")
-            self.add_field(2, "Height")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Split %", default="50")
         elif selected == "Puffy":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Num sides")
-            self.add_field(2, "Offset")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "W":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Num segments")
-            self.add_field(2, "Height")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "X + 1":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Height")
-            self.add_field(2, "Number of segments")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Amplitude", default=a)
+            self.add_field(2, "Number of Segments", default=n)
             self.add_field(3, "X")
         elif selected == "Flat":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Number of segments")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
         elif selected == "Lotus":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Number of petals")
-            self.add_field(2, "Height")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "A":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Num segments")
-            self.add_field(2, "Height")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Amplitude", default=a)
         elif selected == "Sine":
-            self.add_field(0, "Radius")
-            self.add_field(1, "Amplitude")
-            self.add_field(2, "Number of segments")
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Amplitude", default=a)
+            self.add_field(2, "Number of Segments", default=n)
 
     def _get_selected_parameters(self):
         selected = self.option_var.get()
         if selected == "Bump":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Number of Bumps"].get())
-            height = float(self.field_vars["Height of Bumps"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -786,9 +858,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "Dip":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Number of Dips"].get())
-            height = float(self.field_vars["Height of Dips"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -797,9 +869,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "Arch":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Number of Arches"].get())
-            height = float(self.field_vars["Height of Arches"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -808,9 +880,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "Concave+Convex":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Number of Waves"].get())
-            height = float(self.field_vars["Height"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             split_pct = float(self.field_vars["Split %"].get().strip().rstrip("%")) / 100.0
             if not (0.0 < split_pct < 1.0):
                 raise ValueError("Split % must be between 0 and 100 (exclusive)")
@@ -822,9 +894,9 @@ class RosetteGeneratorApp:
                 "extra": split_pct,
             }
         if selected == "Puffy":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Num sides"].get())
-            offset = float(self.field_vars["Offset"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            offset = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -833,9 +905,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "W":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Num segments"].get())
-            height = float(self.field_vars["Height"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -844,9 +916,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "X + 1":
-            radius = float(self.field_vars["Radius"].get())
-            height = float(self.field_vars["Height"].get())
-            count = int(self.field_vars["Number of segments"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            height = float(self.field_vars["Amplitude"].get())
+            count = int(self.field_vars["Number of Segments"].get())
             x_count = int(self.field_vars["X"].get())
             return {
                 "kind": selected,
@@ -856,8 +928,8 @@ class RosetteGeneratorApp:
                 "extra": x_count,
             }
         if selected == "Flat":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Number of segments"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -866,9 +938,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "Lotus":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Number of petals"].get())
-            height = float(self.field_vars["Height"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -877,9 +949,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "A":
-            radius = float(self.field_vars["Radius"].get())
-            count = int(self.field_vars["Num segments"].get())
-            height = float(self.field_vars["Height"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            height = float(self.field_vars["Amplitude"].get())
             return {
                 "kind": selected,
                 "radius": radius,
@@ -888,9 +960,9 @@ class RosetteGeneratorApp:
                 "extra": None,
             }
         if selected == "Sine":
-            radius = float(self.field_vars["Radius"].get())
+            radius = float(self.field_vars["Outer Radius"].get())
             amplitude = float(self.field_vars["Amplitude"].get())
-            count = int(self.field_vars["Number of segments"].get())
+            count = int(self.field_vars["Number of Segments"].get())
             return {
                 "kind": selected,
                 "radius": radius,
