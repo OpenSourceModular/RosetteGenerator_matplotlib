@@ -6,6 +6,17 @@ from tkinter import ttk, messagebox, filedialog
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+try:
+    from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+    from shapely.ops import unary_union
+except ImportError:
+    GeometryCollection = None
+    MultiPolygon = None
+    Polygon = None
+    unary_union = None
 
 
 ROSETTE_TYPES = ["Bump", "Dip", "Arch", "Concave+Convex", "Puffy", "W", "X + 1", "Flat", "Lotus", "A", "Sine"]
@@ -621,6 +632,87 @@ def export_curve_only_svg(
         out_file.write("\n".join(svg_lines))
 
 
+def export_geometry_svg(
+    path,
+    geometry,
+    stroke=CURVE_COLOR,
+    stroke_width=0.25,
+):
+    if geometry is None or geometry.is_empty:
+        raise ValueError("No merged geometry was generated for export")
+
+    min_x, min_y, max_x, max_y = geometry.bounds
+    margin = max(stroke_width * 2.0, 0.5)
+
+    view_min_x = min_x - margin
+    view_min_y = min_y - margin
+    view_w = (max_x - min_x) + (2.0 * margin)
+    view_h = (max_y - min_y) + (2.0 * margin)
+
+    svg_lines = [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>",
+        "<svg",
+        "   version=\"1.1\"",
+        "   viewBox=\"{0:.6f} {1:.6f} {2:.6f} {3:.6f}\"".format(
+            view_min_x, view_min_y, view_w, view_h
+        ),
+        "   id=\"svg1\"",
+        "   sodipodi:docname=\"{0}\"".format(os.path.basename(path)),
+        "   inkscape:version=\"1.4.2\"",
+        "   xmlns:inkscape=\"http://www.inkscape.org/namespaces/inkscape\"",
+        "   xmlns:sodipodi=\"http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd\"",
+        "   xmlns=\"http://www.w3.org/2000/svg\"",
+        "   xmlns:svg=\"http://www.w3.org/2000/svg\">",
+        "  <defs id=\"defs1\" />",
+        "  <sodipodi:namedview",
+        "     id=\"namedview1\"",
+        "     pagecolor=\"#ffffff\"",
+        "     bordercolor=\"#000000\"",
+        "     borderopacity=\"0.25\"",
+        "     inkscape:showpageshadow=\"2\"",
+        "     inkscape:pageopacity=\"0.0\"",
+        "     inkscape:pagecheckerboard=\"0\"",
+        "     inkscape:deskcolor=\"#d1d1d1\"",
+        "     inkscape:current-layer=\"svg1\" />",
+    ]
+
+    path_parts = []
+    for polygon in _iter_polygon_parts(geometry):
+        exterior_points = list(polygon.exterior.coords)
+        if not exterior_points:
+            continue
+        path_parts.append(
+            "M {0:.6f} {1:.6f}".format(exterior_points[0][0], exterior_points[0][1])
+        )
+        for px, py in exterior_points[1:]:
+            path_parts.append("L {0:.6f} {1:.6f}".format(px, py))
+        path_parts.append("Z")
+
+        for interior in polygon.interiors:
+            interior_points = list(interior.coords)
+            if not interior_points:
+                continue
+            path_parts.append(
+                "M {0:.6f} {1:.6f}".format(interior_points[0][0], interior_points[0][1])
+            )
+            for px, py in interior_points[1:]:
+                path_parts.append("L {0:.6f} {1:.6f}".format(px, py))
+            path_parts.append("Z")
+
+    if path_parts:
+        d_value = " ".join(path_parts)
+        svg_lines.append(
+            "  <path d=\"{0}\" fill=\"none\" stroke=\"{1}\" stroke-width=\"{2:.6f}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" id=\"path1\" />".format(
+                d_value, stroke, stroke_width
+            )
+        )
+
+    svg_lines.append("</svg>")
+
+    with open(path, "w", encoding="utf-8") as out_file:
+        out_file.write("\n".join(svg_lines))
+
+
 def draw_rosette(kind, radius, count, height, extra=None, show=True, curve_only=False):
     segments, reference_radius, title, reference_label = get_rosette_geometry(
         kind, radius, count, height, extra
@@ -628,8 +720,39 @@ def draw_rosette(kind, radius, count, height, extra=None, show=True, curve_only=
 
     fig, ax = plt.subplots(figsize=(7, 7))
     fig.canvas.manager.set_window_title(title)
+    _draw_rosette_on_axes(
+        ax,
+        segments,
+        reference_radius,
+        radius,
+        title,
+        reference_label,
+        curve_only=curve_only,
+    )
+    if show:
+        plt.show()
+    return fig
 
-    if not curve_only:
+
+def _draw_rosette_on_axes(
+    ax,
+    segments,
+    reference_radius,
+    radius,
+    title,
+    reference_label,
+    clear_axes=True,
+    include_reference=True,
+    show_title=True,
+    show_legend=True,
+    view_radius=None,
+    polar_grid=False,
+    curve_only=False,
+):
+    if clear_axes:
+        ax.clear()
+
+    if not curve_only and include_reference:
         theta = np.linspace(0.0, TAU, 400)
         ax.plot(
             reference_radius * np.cos(theta),
@@ -650,36 +773,239 @@ def draw_rosette(kind, radius, count, height, extra=None, show=True, curve_only=
             y = np.array([p0[1], p1[1]], dtype=float)
         ax.plot(x, y, color=CURVE_COLOR, linewidth=1.8)
 
-    max_extent = radius * 1.15
+    axis_radius = view_radius if view_radius is not None else radius
+    max_extent = axis_radius * 1.15
     ax.set_xlim(-max_extent, max_extent)
     ax.set_ylim(-max_extent, max_extent)
     ax.set_aspect("equal", adjustable="box")
+
     if curve_only:
         ax.axis("off")
-        fig.patch.set_alpha(0.0)
+        ax.figure.patch.set_alpha(0.0)
     else:
-        ax.grid(True, linestyle=":", linewidth=0.6)
-        ax.set_title(title)
+        _apply_grid_mode(ax, axis_radius, polar_grid)
+        if show_title:
+            ax.set_title(title)
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
-        ax.legend(loc="upper right")
-    if show:
-        plt.show()
-    return fig
+        if show_legend:
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(loc="upper right")
+
+
+def _render_rosette_in_axes(
+    ax,
+    kind,
+    radius,
+    count,
+    height,
+    extra=None,
+    clear_axes=True,
+    include_reference=True,
+    show_title=True,
+    show_legend=True,
+    view_radius=None,
+    polar_grid=False,
+    curve_only=False,
+):
+    segments, reference_radius, title, reference_label = get_rosette_geometry(
+        kind, radius, count, height, extra
+    )
+    _draw_rosette_on_axes(
+        ax,
+        segments,
+        reference_radius,
+        radius,
+        title,
+        reference_label,
+        clear_axes=clear_axes,
+        include_reference=include_reference,
+        show_title=show_title,
+        show_legend=show_legend,
+        view_radius=view_radius,
+        polar_grid=polar_grid,
+        curve_only=curve_only,
+    )
+
+
+def _apply_grid_mode(ax, axis_radius, polar_grid):
+    if not polar_grid:
+        ax.grid(True, linestyle=":", linewidth=0.6)
+        return
+
+    ax.grid(False)
+    grid_color = "#b0b0b0"
+
+    theta = np.linspace(0.0, TAU, 361)
+    ring_count = 4
+    for idx in range(1, ring_count + 1):
+        ring_radius = axis_radius * (idx / float(ring_count))
+        ax.plot(
+            ring_radius * np.cos(theta),
+            ring_radius * np.sin(theta),
+            linestyle=":",
+            linewidth=0.6,
+            color=grid_color,
+            zorder=0,
+        )
+
+    for degrees in range(0, 360, 45):
+        angle = math.radians(degrees)
+        x = axis_radius * math.cos(angle)
+        y = axis_radius * math.sin(angle)
+        ax.plot(
+            [-x, x],
+            [-y, y],
+            linestyle=":",
+            linewidth=0.8,
+            color=grid_color,
+            zorder=0,
+        )
+
+
+def _segments_to_outline_points(segments):
+    outline_points = []
+
+    for segment in segments:
+        if segment[0] == "arc":
+            _, p0, p1, p2 = segment
+            x, y = arc_through_three_points(p0, p1, p2, samples=120)
+        else:
+            _, p0, p1 = segment
+            x = np.array([p0[0], p1[0]], dtype=float)
+            y = np.array([p0[1], p1[1]], dtype=float)
+
+        points = list(zip(x.tolist(), y.tolist()))
+        if outline_points and points:
+            points = points[1:]
+        outline_points.extend(points)
+
+    if outline_points and outline_points[0] != outline_points[-1]:
+        outline_points.append(outline_points[0])
+
+    return outline_points
+
+
+def _build_rosette_geometry(kind, radius, count, height, extra=None):
+    if Polygon is None:
+        raise RuntimeError("Merge requires the shapely package.")
+
+    segments, _, title, _ = get_rosette_geometry(kind, radius, count, height, extra)
+    outline_points = _segments_to_outline_points(segments)
+    if len(outline_points) < 4:
+        raise ValueError("Not enough points to build rosette geometry.")
+
+    geometry = Polygon(outline_points)
+    if not geometry.is_valid:
+        geometry = geometry.buffer(0)
+    if geometry.is_empty:
+        raise ValueError("Generated rosette geometry is empty.")
+
+    return geometry, title
+
+
+def _iter_polygon_parts(geometry):
+    if geometry is None or geometry.is_empty:
+        return
+    if geometry.geom_type == "Polygon":
+        yield geometry
+        return
+    if geometry.geom_type == "MultiPolygon":
+        for polygon in geometry.geoms:
+            yield polygon
+        return
+    if geometry.geom_type == "GeometryCollection":
+        for part in geometry.geoms:
+            yield from _iter_polygon_parts(part)
+
+
+def _draw_geometry_on_axes(
+    ax,
+    geometry,
+    title,
+    clear_axes=True,
+    show_title=True,
+    view_radius=None,
+    polar_grid=False,
+):
+    if clear_axes:
+        ax.clear()
+
+    for polygon in _iter_polygon_parts(geometry):
+        x, y = polygon.exterior.xy
+        ax.plot(x, y, color=CURVE_COLOR, linewidth=1.8)
+        for interior in polygon.interiors:
+            x, y = interior.xy
+            ax.plot(x, y, color=CURVE_COLOR, linewidth=1.4)
+
+    if view_radius is None:
+        min_x, min_y, max_x, max_y = geometry.bounds
+        axis_radius = max(abs(min_x), abs(max_x), abs(min_y), abs(max_y), 1.0)
+    else:
+        axis_radius = view_radius
+
+    max_extent = axis_radius * 1.15
+    ax.set_xlim(-max_extent, max_extent)
+    ax.set_ylim(-max_extent, max_extent)
+    ax.set_aspect("equal", adjustable="box")
+    _apply_grid_mode(ax, axis_radius, polar_grid)
+    if show_title:
+        ax.set_title(title)
+    ax.set_xlabel("X (mm)")
+    ax.set_ylabel("Y (mm)")
+
+
+def _copy_draw_state(state):
+    if state is None:
+        return None
+    if state["type"] == "config":
+        return {"type": "config", "config": dict(state["config"])}
+    return {"type": "geometry", "geometry": state["geometry"], "title": state["title"]}
+
+
+def _draw_states_equal(left, right):
+    if left is None or right is None:
+        return False
+    if left["type"] != right["type"]:
+        return False
+    if left["type"] == "config":
+        return left["config"] == right["config"]
+    return left["geometry"].equals(right["geometry"])
+
+
+def _state_view_radius(state):
+    if state is None:
+        return 1.0
+    if state["type"] == "config":
+        return state["config"]["radius"]
+
+    min_x, min_y, max_x, max_y = state["geometry"].bounds
+    return max(abs(min_x), abs(max_x), abs(min_y), abs(max_y), 1.0)
 
 
 class RosetteGeneratorApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Rosette Generator using Matplotlib")
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
 
         self.option_var = tk.StringVar(value=ROSETTE_TYPES[0])
+        self.auto_draw_var = tk.BooleanVar(value=False)
+        self.polar_grid_var = tk.BooleanVar(value=False)
         self.field_vars = {}
         self.last_rosette_config = None
+        self.last_drawn_state = None
+        self.held_rosette_config = None
         self.defaults = self._load_defaults()
+        self.auto_draw_var.set(bool(self.defaults.get("auto_draw", False)))
+        self.polar_grid_var.set(bool(self.defaults.get("polar_grid", False)))
 
         self.main_frame = ttk.Frame(root, padding=10)
         self.main_frame.grid(row=0, column=0, sticky="nsew")
+        self.main_frame.columnconfigure(0, weight=1)
+        self.main_frame.rowconfigure(3, weight=1)
 
         option_row = ttk.Frame(self.main_frame)
         option_row.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -695,6 +1021,22 @@ class RosetteGeneratorApp:
         self.option_combo.pack(side="left", padx=(8, 0))
         self.option_combo.bind("<<ComboboxSelected>>", self.on_option_changed)
 
+        auto_draw_check = ttk.Checkbutton(
+            option_row,
+            text="Auto draw",
+            variable=self.auto_draw_var,
+            command=self._auto_draw_if_enabled,
+        )
+        auto_draw_check.pack(side="left", padx=(12, 0))
+
+        polar_cartesian_check = ttk.Checkbutton(
+            option_row,
+            text="Polar/Cartesian",
+            variable=self.polar_grid_var,
+            command=self.on_grid_mode_changed,
+        )
+        polar_cartesian_check.pack(side="left", padx=(12, 0))
+
         self.dynamic_frame = ttk.Frame(self.main_frame)
         self.dynamic_frame.grid(row=1, column=0, sticky="ew")
 
@@ -707,11 +1049,36 @@ class RosetteGeneratorApp:
         export_btn = ttk.Button(button_row, text="Export SVG", command=self.on_export_svg)
         export_btn.pack(side="left", padx=(0, 6))
 
+        clear_btn = ttk.Button(button_row, text="Clear", command=self.on_clear_graph)
+        clear_btn.pack(side="left", padx=(0, 6))
+
+        self.hold_btn = tk.Button(button_row, text="Hold", command=self.on_hold)
+        self.hold_btn.pack(side="left", padx=(0, 6))
+        self.default_hold_button_bg = self.hold_btn.cget("background")
+
+        reset_btn = ttk.Button(button_row, text="Reset", command=self.on_reset)
+        reset_btn.pack(side="left", padx=(0, 6))
+
+        merge_btn = ttk.Button(button_row, text="Merge", command=self.on_merge)
+        merge_btn.pack(side="left", padx=(0, 6))
+
         close_btn = ttk.Button(button_row, text="Close", command=self.root.destroy)
         close_btn.pack(side="left", padx=(0, 6))
 
         defaults_btn = ttk.Button(button_row, text="Defaults", command=self.on_defaults)
         defaults_btn.pack(side="left")
+
+        self.plot_frame = ttk.Frame(self.main_frame)
+        self.plot_frame.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        self.plot_frame.columnconfigure(0, weight=1)
+        self.plot_frame.rowconfigure(0, weight=1)
+
+        self.figure = Figure(figsize=(7, 7), dpi=100)
+        self.ax = self.figure.add_subplot(111)
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_frame)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        self.on_clear_graph()
 
         self.on_option_changed()
 
@@ -723,14 +1090,31 @@ class RosetteGeneratorApp:
     def add_field(self, row, label, default=""):
         ttk.Label(self.dynamic_frame, text=label).grid(row=row, column=0, sticky="w", pady=2)
         var = tk.StringVar(value=default)
+        var.trace_add("write", self.on_field_changed)
         entry = ttk.Entry(self.dynamic_frame, textvariable=var, width=18)
         entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
         self.field_vars[label] = var
+
+    def on_field_changed(self, *_args):
+        self._auto_draw_if_enabled()
 
     def _defaults_path(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "rosette_defaults.json")
 
     def _load_defaults(self):
+        def _parse_bool(value, fallback=False):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in ("1", "true", "yes", "on"):
+                    return True
+                if normalized in ("0", "false", "no", "off"):
+                    return False
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return fallback
+
         path = self._defaults_path()
         if os.path.isfile(path):
             try:
@@ -740,10 +1124,18 @@ class RosetteGeneratorApp:
                     "outer_radius": float(data.get("outer_radius", 50)),
                     "amplitude": float(data.get("amplitude", 5)),
                     "num_segments": int(data.get("num_segments", 12)),
+                    "auto_draw": _parse_bool(data.get("auto_draw", False), False),
+                    "polar_grid": _parse_bool(data.get("polar_grid", False), False),
                 }
             except Exception:
                 pass
-        return {"outer_radius": 50.0, "amplitude": 5.0, "num_segments": 12}
+        return {
+            "outer_radius": 50.0,
+            "amplitude": 5.0,
+            "num_segments": 12,
+            "auto_draw": False,
+            "polar_grid": False,
+        }
 
     def on_defaults(self):
         dialog = tk.Toplevel(self.root)
@@ -766,6 +1158,20 @@ class RosetteGeneratorApp:
         segments_var = tk.StringVar(value=str(self.defaults["num_segments"]))
         ttk.Entry(frame, textvariable=segments_var, width=14).grid(row=2, column=1, padx=(8, 0), pady=4)
 
+        auto_draw_default_var = tk.BooleanVar(value=bool(self.defaults.get("auto_draw", False)))
+        ttk.Checkbutton(
+            frame,
+            text="Auto draw",
+            variable=auto_draw_default_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
+
+        polar_grid_default_var = tk.BooleanVar(value=bool(self.defaults.get("polar_grid", False)))
+        ttk.Checkbutton(
+            frame,
+            text="Polar/Cartesian",
+            variable=polar_grid_default_var,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
+
         def on_save():
             try:
                 new_radius = float(radius_var.get())
@@ -777,6 +1183,8 @@ class RosetteGeneratorApp:
             self.defaults["outer_radius"] = new_radius
             self.defaults["amplitude"] = new_amplitude
             self.defaults["num_segments"] = new_segments
+            self.defaults["auto_draw"] = bool(auto_draw_default_var.get())
+            self.defaults["polar_grid"] = bool(polar_grid_default_var.get())
             path = self._defaults_path()
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -784,10 +1192,14 @@ class RosetteGeneratorApp:
             except Exception as exc:
                 messagebox.showerror("Save Failed", str(exc), parent=dialog)
                 return
+
+            self.auto_draw_var.set(self.defaults["auto_draw"])
+            self.polar_grid_var.set(self.defaults["polar_grid"])
+            self.on_grid_mode_changed()
             dialog.destroy()
 
         btn_row = ttk.Frame(frame)
-        btn_row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        btn_row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
         ttk.Button(btn_row, text="Save", command=on_save).pack(side="left", padx=(0, 6))
         ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left")
 
@@ -827,7 +1239,7 @@ class RosetteGeneratorApp:
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
-            self.add_field(3, "X")
+            self.add_field(3, "X", default="3")
         elif selected == "Flat":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
@@ -843,6 +1255,8 @@ class RosetteGeneratorApp:
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
+
+        self._auto_draw_if_enabled()
 
     def _get_selected_parameters(self):
         selected = self.option_var.get()
@@ -973,33 +1387,202 @@ class RosetteGeneratorApp:
         raise ValueError("Rosette style is not implemented for drawing")
 
     def on_create(self):
+        self._draw_current_config(show_errors=True, clear_first=True)
+
+    def _draw_current_config(self, show_errors, clear_first):
         try:
             config = self._get_selected_parameters()
-            draw_rosette(
+            current_state = {"type": "config", "config": dict(config)}
+            held_state = self.held_rosette_config
+            has_distinct_held = held_state is not None and not _draw_states_equal(held_state, current_state)
+            view_radius = max(_state_view_radius(current_state), _state_view_radius(held_state))
+
+            if clear_first:
+                self.ax.clear()
+                self.figure.patch.set_alpha(1.0)
+
+            if has_distinct_held:
+                self._render_state(
+                    held_state,
+                    clear_axes=False,
+                    show_title=False,
+                    show_legend=False,
+                    include_reference=False,
+                    view_radius=view_radius,
+                )
+
+            self._render_state(
+                current_state,
+                clear_axes=False if has_distinct_held else True,
+                show_title=True,
+                show_legend=True,
+                include_reference=True,
+                view_radius=view_radius,
+            )
+            self.canvas.draw_idle()
+            self.last_rosette_config = config
+            self.last_drawn_state = current_state
+        except ValueError as exc:
+            if show_errors:
+                messagebox.showerror("Invalid Input", str(exc))
+        except Exception as exc:
+            if show_errors:
+                messagebox.showerror("Create Failed", str(exc))
+
+    def _render_state(
+        self,
+        state,
+        clear_axes,
+        show_title,
+        show_legend=False,
+        include_reference=False,
+        view_radius=None,
+    ):
+        if state["type"] == "config":
+            config = state["config"]
+            _render_rosette_in_axes(
+                self.ax,
                 config["kind"],
                 config["radius"],
                 config["count"],
                 config["height"],
                 extra=config["extra"],
-                show=True,
+                clear_axes=clear_axes,
+                include_reference=include_reference,
+                show_title=show_title,
+                show_legend=show_legend,
+                view_radius=view_radius,
+                polar_grid=self.polar_grid_var.get(),
             )
-            self.last_rosette_config = config
+            return
+
+        _draw_geometry_on_axes(
+            self.ax,
+            state["geometry"],
+            state["title"],
+            clear_axes=clear_axes,
+            show_title=show_title,
+            view_radius=view_radius,
+            polar_grid=self.polar_grid_var.get(),
+        )
+
+    def on_grid_mode_changed(self):
+        if self.last_drawn_state is None:
+            return
+
+        if self.last_drawn_state["type"] == "config":
+            self._draw_current_config(show_errors=False, clear_first=True)
+            return
+
+        self._render_state(
+            self.last_drawn_state,
+            clear_axes=True,
+            show_title=True,
+            view_radius=_state_view_radius(self.last_drawn_state),
+        )
+        self.figure.patch.set_alpha(1.0)
+        self.canvas.draw_idle()
+
+    def _auto_draw_if_enabled(self):
+        if self.auto_draw_var.get():
+            self._draw_current_config(show_errors=False, clear_first=True)
+
+    def on_clear_graph(self):
+        self.ax.clear()
+        self.ax.axis("off")
+        self.ax.text(
+            0.5,
+            0.5,
+            "Graph cleared",
+            ha="center",
+            va="center",
+            transform=self.ax.transAxes,
+            color="#606060",
+        )
+        self.figure.patch.set_alpha(1.0)
+        self.canvas.draw_idle()
+        self.last_rosette_config = None
+        self.last_drawn_state = None
+
+    def on_hold(self):
+        if self.last_drawn_state is None:
+            messagebox.showinfo("Hold", "Create a rosette first.")
+            return
+        self.held_rosette_config = _copy_draw_state(self.last_drawn_state)
+        self.hold_btn.configure(background="yellow")
+
+    def on_reset(self):
+        self.held_rosette_config = None
+        self.hold_btn.configure(background=self.default_hold_button_bg)
+        self.on_clear_graph()
+
+    def on_merge(self):
+        if unary_union is None or Polygon is None:
+            messagebox.showerror("Merge Unavailable", "Merge requires the shapely package.")
+            return
+        if self.held_rosette_config is None:
+            messagebox.showinfo("Merge", "Hold a rosette first.")
+            return
+        if self.last_drawn_state is None:
+            messagebox.showinfo("Merge", "Create a rosette first.")
+            return
+
+        try:
+            held_geometry = self._state_to_geometry(self.held_rosette_config)
+            current_geometry = self._state_to_geometry(self.last_drawn_state)
+            merged_geometry = unary_union([held_geometry, current_geometry])
+            if not merged_geometry.is_valid:
+                merged_geometry = merged_geometry.buffer(0)
+            if merged_geometry.is_empty:
+                raise ValueError("Merged geometry is empty.")
+
+            merged_state = {
+                "type": "geometry",
+                "geometry": merged_geometry,
+                "title": "Merged Rosette",
+            }
+            view_radius = max(_state_view_radius(self.held_rosette_config), _state_view_radius(merged_state))
+            self._render_state(
+                merged_state,
+                clear_axes=True,
+                show_title=True,
+                view_radius=view_radius,
+            )
+            self.figure.patch.set_alpha(1.0)
+            self.canvas.draw_idle()
+            self.last_drawn_state = merged_state
+            self.last_rosette_config = None
         except ValueError as exc:
-            messagebox.showerror("Invalid Input", str(exc))
+            messagebox.showerror("Merge Failed", str(exc))
         except Exception as exc:
-            messagebox.showerror("Create Failed", str(exc))
+            messagebox.showerror("Merge Failed", str(exc))
+
+    def _state_to_geometry(self, state):
+        if state["type"] == "geometry":
+            return state["geometry"]
+
+        config = state["config"]
+        geometry, _ = _build_rosette_geometry(
+            config["kind"],
+            config["radius"],
+            config["count"],
+            config["height"],
+            extra=config["extra"],
+        )
+        return geometry
 
     def on_export_svg(self):
-        if self.last_rosette_config is None:
+        if self.last_drawn_state is None:
             messagebox.showinfo("Export SVG", "Create a rosette first.")
             return
 
-        kind = self.last_rosette_config["kind"]
-        radius = self.last_rosette_config["radius"]
-        count = self.last_rosette_config["count"]
-        height = self.last_rosette_config["height"]
-        extra = self.last_rosette_config["extra"]
-        default_name = "{0}-{1}.svg".format(kind, count)
+        if self.last_drawn_state["type"] == "geometry":
+            default_name = "Merged-Rosette.svg"
+        else:
+            kind = self.last_drawn_state["config"]["kind"]
+            count = self.last_drawn_state["config"]["count"]
+            default_name = "{0}-{1}.svg".format(kind, count)
+
         path = filedialog.asksaveasfilename(
             title="Export Rosette as SVG",
             defaultextension=".svg",
@@ -1010,14 +1593,18 @@ class RosetteGeneratorApp:
             return
 
         try:
-            export_curve_only_svg(
-                path,
-                kind,
-                radius,
-                count,
-                height,
-                extra=extra,
-            )
+            if self.last_drawn_state["type"] == "geometry":
+                export_geometry_svg(path, self.last_drawn_state["geometry"])
+            else:
+                config = self.last_drawn_state["config"]
+                export_curve_only_svg(
+                    path,
+                    config["kind"],
+                    config["radius"],
+                    config["count"],
+                    config["height"],
+                    extra=config["extra"],
+                )
             messagebox.showinfo("Export Complete", "Saved SVG to:\n{0}".format(path))
         except Exception as exc:
             messagebox.showerror("Export Failed", str(exc))

@@ -1,5 +1,7 @@
 {
   "outer_radius": 50.0,
   "amplitude": 5.0,
-  "num_segments": 12
+  "num_segments": 12,
+  "auto_draw": true,
+  "polar_grid": true
 }
