@@ -19,7 +19,7 @@ except ImportError:
     unary_union = None
 
 
-ROSETTE_TYPES = ["Bump", "Dip", "Arch", "Concave+Convex", "Puffy", "W", "X + 1", "Flat", "Lotus", "A", "Sine"]
+ROSETTE_TYPES = ["Bump", "Dip", "Arch", "Concave+Convex", "Puffy", "W", "X + 1", "Flat", "Lotus", "A", "Sine", "Bead"]
 TAU = 2.0 * math.pi
 CURVE_COLOR = "#000000"
 
@@ -460,6 +460,86 @@ def generate_sine_segments(radius, count, amplitude, samples_per_period=120):
     return segments, radius - (amplitude / 2.0)
 
 
+def generate_bead_segments(radius, count, amplitude, flat_length):
+    if amplitude <= 0:
+        raise ValueError("Amplitude must be greater than 0")
+    if flat_length < 0:
+        raise ValueError("Flat length must be greater than or equal to 0")
+
+    construction_radius = radius - (amplitude / 2.0)
+    inner_radius = radius - amplitude
+    if construction_radius <= 0 or inner_radius <= 0:
+        raise ValueError("Amplitude must be smaller than Radius")
+
+    angle_step = TAU / float(count)
+    flat_angle = flat_length / construction_radius
+    if (2.0 * flat_angle) >= angle_step:
+        raise ValueError("Flat length is too large for the selected radius and segment count")
+
+    bulge_span = (angle_step - (2.0 * flat_angle)) / 2.0
+    if bulge_span <= 1e-6:
+        raise ValueError("Flat length leaves no room for bead bulges")
+
+    segments = []
+
+    for i in range(count):
+        segment_start = i * angle_step
+        first_arc_end = segment_start + bulge_span
+        first_flat_end = first_arc_end + flat_angle
+        second_arc_end = first_flat_end + bulge_span
+        segment_end = segment_start + angle_step
+
+        p_first_start = (
+            construction_radius * math.cos(segment_start),
+            construction_radius * math.sin(segment_start),
+        )
+        p_first_peak = (
+            radius * math.cos(segment_start + (bulge_span / 2.0)),
+            radius * math.sin(segment_start + (bulge_span / 2.0)),
+        )
+        p_first_end = (
+            construction_radius * math.cos(first_arc_end),
+            construction_radius * math.sin(first_arc_end),
+        )
+        segments.append(("arc", p_first_start, p_first_peak, p_first_end))
+
+        if flat_angle > 1e-6:
+            p_first_flat_mid = (
+                construction_radius * math.cos(first_arc_end + (flat_angle / 2.0)),
+                construction_radius * math.sin(first_arc_end + (flat_angle / 2.0)),
+            )
+            p_first_flat_end = (
+                construction_radius * math.cos(first_flat_end),
+                construction_radius * math.sin(first_flat_end),
+            )
+            segments.append(("arc", p_first_end, p_first_flat_mid, p_first_flat_end))
+        else:
+            p_first_flat_end = p_first_end
+
+        p_second_valley = (
+            inner_radius * math.cos(first_flat_end + (bulge_span / 2.0)),
+            inner_radius * math.sin(first_flat_end + (bulge_span / 2.0)),
+        )
+        p_second_arc_end = (
+            construction_radius * math.cos(second_arc_end),
+            construction_radius * math.sin(second_arc_end),
+        )
+        segments.append(("arc", p_first_flat_end, p_second_valley, p_second_arc_end))
+
+        if flat_angle > 1e-6:
+            p_second_flat_mid = (
+                construction_radius * math.cos(second_arc_end + (flat_angle / 2.0)),
+                construction_radius * math.sin(second_arc_end + (flat_angle / 2.0)),
+            )
+            p_second_flat_end = (
+                construction_radius * math.cos(segment_end),
+                construction_radius * math.sin(segment_end),
+            )
+            segments.append(("arc", p_second_arc_end, p_second_flat_mid, p_second_flat_end))
+
+    return segments, construction_radius
+
+
 def get_rosette_geometry(kind, radius, count, height, extra=None):
     if radius <= 0:
         raise ValueError("Radius must be greater than 0")
@@ -533,6 +613,12 @@ def get_rosette_geometry(kind, radius, count, height, extra=None):
         segments, reference_radius = generate_sine_segments(radius, count, height)
         title = "Sine-{0}".format(count)
         reference_label = "Mid Radius"
+    elif kind == "Bead":
+        if extra is None:
+            raise ValueError("Flat length is required for Bead style")
+        segments, reference_radius = generate_bead_segments(radius, count, height, extra)
+        title = "Bead-{0}".format(count)
+        reference_label = "Construction Circle (Radius - Amplitude/2)"
     else:
         raise ValueError("Rosette style is not implemented for drawing")
 
@@ -1039,6 +1125,7 @@ class RosetteGeneratorApp:
 
         self.dynamic_frame = ttk.Frame(self.main_frame)
         self.dynamic_frame.grid(row=1, column=0, sticky="ew")
+        self.dynamic_frame.columnconfigure(1, weight=1)
 
         button_row = ttk.Frame(self.main_frame)
         button_row.grid(row=2, column=0, sticky="e", pady=(10, 0))
@@ -1089,10 +1176,48 @@ class RosetteGeneratorApp:
 
     def add_field(self, row, label, default=""):
         ttk.Label(self.dynamic_frame, text=label).grid(row=row, column=0, sticky="w", pady=2)
-        var = tk.StringVar(value=default)
-        var.trace_add("write", self.on_field_changed)
-        entry = ttk.Entry(self.dynamic_frame, textvariable=var, width=18)
-        entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+        slider_specs = {
+            "Outer Radius": {"type": "float", "from": 1.0, "to": 175.0, "resolution": 0.5},
+            "Number of Segments": {"type": "int", "from": 1, "to": 96, "resolution": 1},
+            "Amplitude": {"type": "float", "from": 0.0, "to": 50.0, "resolution": 0.5},
+            "Flat Length": {"type": "float", "from": 0.0, "to": 80.0, "resolution": 0.5},
+        }
+
+        if label in slider_specs:
+            spec = slider_specs[label]
+            if spec["type"] == "int":
+                try:
+                    numeric_default = int(float(default))
+                except ValueError:
+                    numeric_default = spec["from"]
+                numeric_default = max(spec["from"], min(spec["to"], numeric_default))
+                var = tk.IntVar(value=numeric_default)
+            else:
+                try:
+                    numeric_default = float(default)
+                except ValueError:
+                    numeric_default = spec["from"]
+                numeric_default = max(spec["from"], min(spec["to"], numeric_default))
+                var = tk.DoubleVar(value=numeric_default)
+
+            var.trace_add("write", self.on_field_changed)
+            slider = tk.Scale(
+                self.dynamic_frame,
+                from_=spec["from"],
+                to=spec["to"],
+                orient="horizontal",
+                resolution=spec["resolution"],
+                showvalue=True,
+                variable=var,
+                length=260,
+            )
+            slider.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+        else:
+            var = tk.StringVar(value=default)
+            var.trace_add("write", self.on_field_changed)
+            entry = ttk.Entry(self.dynamic_frame, textvariable=var, width=18)
+            entry.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+
         self.field_vars[label] = var
 
     def on_field_changed(self, *_args):
@@ -1255,6 +1380,11 @@ class RosetteGeneratorApp:
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
+        elif selected == "Bead":
+            self.add_field(0, "Outer Radius", default=r)
+            self.add_field(1, "Amplitude", default=a)
+            self.add_field(2, "Number of Segments", default=n)
+            self.add_field(3, "Flat Length", default="8.0")
 
         self._auto_draw_if_enabled()
 
@@ -1383,6 +1513,18 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": amplitude,
                 "extra": None,
+            }
+        if selected == "Bead":
+            radius = float(self.field_vars["Outer Radius"].get())
+            amplitude = float(self.field_vars["Amplitude"].get())
+            count = int(self.field_vars["Number of Segments"].get())
+            flat_length = float(self.field_vars["Flat Length"].get())
+            return {
+                "kind": selected,
+                "radius": radius,
+                "count": count,
+                "height": amplitude,
+                "extra": flat_length,
             }
         raise ValueError("Rosette style is not implemented for drawing")
 
