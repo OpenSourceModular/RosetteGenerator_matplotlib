@@ -38,6 +38,35 @@ def _distance(p0, p1):
     return math.hypot(p0[0] - p1[0], p0[1] - p1[1])
 
 
+def _rotate_point(point, angle_rad):
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    x, y = point
+    return (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
+
+
+def _rotate_segments(segments, angle_rad):
+    if abs(angle_rad) <= 1e-12:
+        return segments
+
+    rotated = []
+    for segment in segments:
+        if segment[0] == "arc":
+            _, p0, p1, p2 = segment
+            rotated.append(
+                (
+                    "arc",
+                    _rotate_point(p0, angle_rad),
+                    _rotate_point(p1, angle_rad),
+                    _rotate_point(p2, angle_rad),
+                )
+            )
+        else:
+            _, p0, p1 = segment
+            rotated.append(("line", _rotate_point(p0, angle_rad), _rotate_point(p1, angle_rad)))
+    return rotated
+
+
 def arc_through_three_points(p0, p1, p2, samples=60):
     x1, y1 = p0
     x2, y2 = p1
@@ -540,11 +569,13 @@ def generate_bead_segments(radius, count, amplitude, flat_length):
     return segments, construction_radius
 
 
-def get_rosette_geometry(kind, radius, count, height, extra=None):
+def get_rosette_geometry(kind, radius, count, height, extra=None, phase=0.0):
     if radius <= 0:
         raise ValueError("Radius must be greater than 0")
     if count < 1:
         raise ValueError("Count must be at least 1")
+    if phase < 0.0 or phase > 180.0:
+        raise ValueError("Phase must be between 0 and 180 degrees")
 
     if kind == "Bump":
         if height <= 0:
@@ -622,6 +653,9 @@ def get_rosette_geometry(kind, radius, count, height, extra=None):
     else:
         raise ValueError("Rosette style is not implemented for drawing")
 
+    # Positive phase rotates to the right (clockwise).
+    segments = _rotate_segments(segments, -math.radians(phase))
+
     return segments, reference_radius, title, reference_label
 
 
@@ -632,10 +666,11 @@ def export_curve_only_svg(
     count,
     height,
     extra=None,
+    phase=0.0,
     stroke=CURVE_COLOR,
     stroke_width=0.25,
 ):
-    segments, _, _, _ = get_rosette_geometry(kind, radius, count, height, extra)
+    segments, _, _, _ = get_rosette_geometry(kind, radius, count, height, extra, phase=phase)
 
     curve_points = []
     all_x = []
@@ -799,9 +834,9 @@ def export_geometry_svg(
         out_file.write("\n".join(svg_lines))
 
 
-def draw_rosette(kind, radius, count, height, extra=None, show=True, curve_only=False):
+def draw_rosette(kind, radius, count, height, extra=None, phase=0.0, show=True, curve_only=False):
     segments, reference_radius, title, reference_label = get_rosette_geometry(
-        kind, radius, count, height, extra
+        kind, radius, count, height, extra, phase=phase
     )
 
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -887,6 +922,7 @@ def _render_rosette_in_axes(
     count,
     height,
     extra=None,
+    phase=0.0,
     clear_axes=True,
     include_reference=True,
     show_title=True,
@@ -896,7 +932,7 @@ def _render_rosette_in_axes(
     curve_only=False,
 ):
     segments, reference_radius, title, reference_label = get_rosette_geometry(
-        kind, radius, count, height, extra
+        kind, radius, count, height, extra, phase=phase
     )
     _draw_rosette_on_axes(
         ax,
@@ -973,11 +1009,11 @@ def _segments_to_outline_points(segments):
     return outline_points
 
 
-def _build_rosette_geometry(kind, radius, count, height, extra=None):
+def _build_rosette_geometry(kind, radius, count, height, extra=None, phase=0.0):
     if Polygon is None:
         raise RuntimeError("Merge requires the shapely package.")
 
-    segments, _, title, _ = get_rosette_geometry(kind, radius, count, height, extra)
+    segments, _, title, _ = get_rosette_geometry(kind, radius, count, height, extra, phase=phase)
     outline_points = _segments_to_outline_points(segments)
     if len(outline_points) < 4:
         raise ValueError("Not enough points to build rosette geometry.")
@@ -1181,6 +1217,7 @@ class RosetteGeneratorApp:
             "Number of Segments": {"type": "int", "from": 1, "to": 96, "resolution": 1},
             "Amplitude": {"type": "float", "from": 0.0, "to": 50.0, "resolution": 0.5},
             "Flat Length": {"type": "float", "from": 0.0, "to": 80.0, "resolution": 0.5},
+            "Phase": {"type": "float", "from": 0.0, "to": 180.0, "resolution": 0.5, "decimals": 2},
         }
 
         if label in slider_specs:
@@ -1212,6 +1249,48 @@ class RosetteGeneratorApp:
                 length=260,
             )
             slider.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+
+            entry_var = tk.StringVar()
+
+            def _format_value(value):
+                if spec["type"] == "int":
+                    return str(int(round(float(value))))
+                if "decimals" in spec:
+                    decimals = int(spec["decimals"])
+                else:
+                    resolution = float(spec["resolution"])
+                    decimals = max(1, len(str(resolution).split(".")[-1].rstrip("0")))
+                return ("{0:." + str(decimals) + "f}").format(float(value))
+
+            def _sync_entry_from_slider(*_args):
+                entry_var.set(_format_value(var.get()))
+
+            def _apply_entry_value(_event=None):
+                text = entry_var.get().strip()
+                if not text:
+                    entry_var.set(_format_value(var.get()))
+                    return
+                try:
+                    raw_value = float(text)
+                except ValueError:
+                    entry_var.set(_format_value(var.get()))
+                    return
+
+                min_value = float(spec["from"])
+                max_value = float(spec["to"])
+                clamped = max(min_value, min(max_value, raw_value))
+                if spec["type"] == "int":
+                    var.set(int(round(clamped)))
+                else:
+                    var.set(clamped)
+                entry_var.set(_format_value(var.get()))
+
+            _sync_entry_from_slider()
+            var.trace_add("write", _sync_entry_from_slider)
+            entry = ttk.Entry(self.dynamic_frame, textvariable=entry_var, width=8, justify="right")
+            entry.grid(row=row, column=2, sticky="w", padx=(8, 0), pady=2)
+            entry.bind("<Return>", _apply_entry_value)
+            entry.bind("<FocusOut>", _apply_entry_value)
         else:
             var = tk.StringVar(value=default)
             var.trace_add("write", self.on_field_changed)
@@ -1245,12 +1324,16 @@ class RosetteGeneratorApp:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                default_save_dir = str(data.get("default_save_dir", "")).strip()
+                if default_save_dir and not os.path.isdir(default_save_dir):
+                    default_save_dir = ""
                 return {
                     "outer_radius": float(data.get("outer_radius", 50)),
                     "amplitude": float(data.get("amplitude", 5)),
                     "num_segments": int(data.get("num_segments", 12)),
                     "auto_draw": _parse_bool(data.get("auto_draw", False), False),
                     "polar_grid": _parse_bool(data.get("polar_grid", False), False),
+                    "default_save_dir": default_save_dir,
                 }
             except Exception:
                 pass
@@ -1260,6 +1343,7 @@ class RosetteGeneratorApp:
             "num_segments": 12,
             "auto_draw": False,
             "polar_grid": False,
+            "default_save_dir": "",
         }
 
     def on_defaults(self):
@@ -1297,6 +1381,24 @@ class RosetteGeneratorApp:
             variable=polar_grid_default_var,
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=4)
 
+        ttk.Label(frame, text="Default Save Directory:").grid(row=5, column=0, sticky="w", pady=4)
+        save_dir_var = tk.StringVar(value=self.defaults.get("default_save_dir", ""))
+        save_dir_entry = ttk.Entry(frame, textvariable=save_dir_var, width=32)
+        save_dir_entry.grid(row=5, column=1, padx=(8, 0), pady=4, sticky="ew")
+
+        def on_browse_save_dir():
+            chosen_dir = filedialog.askdirectory(
+                title="Select Default Save Directory",
+                mustexist=True,
+                parent=dialog,
+            )
+            if chosen_dir:
+                save_dir_var.set(chosen_dir)
+
+        ttk.Button(frame, text="Browse...", command=on_browse_save_dir).grid(
+            row=5, column=2, padx=(8, 0), pady=4, sticky="w"
+        )
+
         def on_save():
             try:
                 new_radius = float(radius_var.get())
@@ -1305,11 +1407,20 @@ class RosetteGeneratorApp:
             except ValueError:
                 messagebox.showerror("Invalid Input", "Please enter valid numbers.", parent=dialog)
                 return
+            default_save_dir = save_dir_var.get().strip()
+            if default_save_dir and not os.path.isdir(default_save_dir):
+                messagebox.showerror(
+                    "Invalid Directory",
+                    "Default Save Directory must be an existing folder.",
+                    parent=dialog,
+                )
+                return
             self.defaults["outer_radius"] = new_radius
             self.defaults["amplitude"] = new_amplitude
             self.defaults["num_segments"] = new_segments
             self.defaults["auto_draw"] = bool(auto_draw_default_var.get())
             self.defaults["polar_grid"] = bool(polar_grid_default_var.get())
+            self.defaults["default_save_dir"] = default_save_dir
             path = self._defaults_path()
             try:
                 with open(path, "w", encoding="utf-8") as f:
@@ -1324,7 +1435,7 @@ class RosetteGeneratorApp:
             dialog.destroy()
 
         btn_row = ttk.Frame(frame)
-        btn_row.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        btn_row.grid(row=6, column=0, columnspan=3, sticky="e", pady=(10, 0))
         ttk.Button(btn_row, text="Save", command=on_save).pack(side="left", padx=(0, 6))
         ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side="left")
 
@@ -1334,62 +1445,76 @@ class RosetteGeneratorApp:
         r = str(self.defaults["outer_radius"])
         a = str(self.defaults["amplitude"])
         n = str(self.defaults["num_segments"])
+        p = "0"
 
         if selected == "Bump":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "Dip":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "Arch":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "Concave+Convex":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Split %", default="50")
+            self.add_field(4, "Phase", default=p)
         elif selected == "Puffy":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "W":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "X + 1":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
             self.add_field(3, "X", default="3")
+            self.add_field(4, "Phase", default=p)
         elif selected == "Flat":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
+            self.add_field(2, "Phase", default=p)
         elif selected == "Lotus":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "A":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
+            self.add_field(3, "Phase", default=p)
         elif selected == "Sine":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
+            self.add_field(3, "Phase", default=p)
         elif selected == "Bead":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
             self.add_field(3, "Flat Length", default="8.0")
+            self.add_field(4, "Phase", default=p)
 
         self._auto_draw_if_enabled()
 
     def _get_selected_parameters(self):
         selected = self.option_var.get()
+        phase = float(self.field_vars["Phase"].get()) if "Phase" in self.field_vars else 0.0
         if selected == "Bump":
             radius = float(self.field_vars["Outer Radius"].get())
             count = int(self.field_vars["Number of Segments"].get())
@@ -1400,6 +1525,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "Dip":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1411,6 +1537,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "Arch":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1422,6 +1549,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "Concave+Convex":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1436,6 +1564,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": split_pct,
+                "phase": phase,
             }
         if selected == "Puffy":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1447,6 +1576,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": offset,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "W":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1458,6 +1588,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "X + 1":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1470,6 +1601,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": x_count,
+                "phase": phase,
             }
         if selected == "Flat":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1480,6 +1612,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": 0.0,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "Lotus":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1491,6 +1624,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "A":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1502,6 +1636,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": height,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "Sine":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1513,6 +1648,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": amplitude,
                 "extra": None,
+                "phase": phase,
             }
         if selected == "Bead":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1525,6 +1661,7 @@ class RosetteGeneratorApp:
                 "count": count,
                 "height": amplitude,
                 "extra": flat_length,
+                "phase": phase,
             }
         raise ValueError("Rosette style is not implemented for drawing")
 
@@ -1589,6 +1726,7 @@ class RosetteGeneratorApp:
                 config["count"],
                 config["height"],
                 extra=config["extra"],
+                phase=config.get("phase", 0.0),
                 clear_axes=clear_axes,
                 include_reference=include_reference,
                 show_title=show_title,
@@ -1710,6 +1848,7 @@ class RosetteGeneratorApp:
             config["count"],
             config["height"],
             extra=config["extra"],
+            phase=config.get("phase", 0.0),
         )
         return geometry
 
@@ -1729,6 +1868,7 @@ class RosetteGeneratorApp:
             title="Export Rosette as SVG",
             defaultextension=".svg",
             initialfile=default_name,
+            initialdir=self.defaults.get("default_save_dir") or os.path.dirname(os.path.abspath(__file__)),
             filetypes=[("SVG files", "*.svg"), ("All files", "*.*")],
         )
         if not path:
@@ -1746,6 +1886,7 @@ class RosetteGeneratorApp:
                     config["count"],
                     config["height"],
                     extra=config["extra"],
+                    phase=config.get("phase", 0.0),
                 )
             messagebox.showinfo("Export Complete", "Saved SVG to:\n{0}".format(path))
         except Exception as exc:

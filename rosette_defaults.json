@@ -3,5 +3,6 @@
   "amplitude": 5.0,
   "num_segments": 12,
   "auto_draw": true,
-  "polar_grid": true
+  "polar_grid": true,
+  "default_save_dir": "C:/OctoPrint/basedir/5000/uploads/rosette"
 }
