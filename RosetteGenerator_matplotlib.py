@@ -109,6 +109,14 @@ def arc_through_three_points(p0, p1, p2, samples=60):
     return x, y
 
 
+def _apply_radius_clamp(x, y, min_r, max_r):
+    """Clamp each point's distance from origin to [min_r, max_r], preserving angle."""
+    r = np.sqrt(x ** 2 + y ** 2)
+    clamped_r = np.clip(r, min_r, max_r)
+    scale = np.where(r > 1e-12, clamped_r / r, 1.0)
+    return x * scale, y * scale
+
+
 def generate_bump_arcs(radius, count, height):
     ref_radius = radius - height
     if ref_radius <= 0:
@@ -669,6 +677,8 @@ def export_curve_only_svg(
     phase=0.0,
     stroke=CURVE_COLOR,
     stroke_width=0.25,
+    max_radius=None,
+    min_radius=None,
 ):
     segments, _, _, _ = get_rosette_geometry(kind, radius, count, height, extra, phase=phase)
 
@@ -683,6 +693,11 @@ def export_curve_only_svg(
             _, p0, p1 = segment
             x = np.array([p0[0], p1[0]], dtype=float)
             y = np.array([p0[1], p1[1]], dtype=float)
+
+        if max_radius is not None or min_radius is not None:
+            eff_min = min_radius if min_radius is not None else 0.0
+            eff_max = max_radius if max_radius is not None else float("inf")
+            x, y = _apply_radius_clamp(x, y, eff_min, eff_max)
 
         curve_points.append((x, y))
         all_x.extend(x.tolist())
@@ -869,6 +884,8 @@ def _draw_rosette_on_axes(
     view_radius=None,
     polar_grid=False,
     curve_only=False,
+    max_radius=None,
+    min_radius=None,
 ):
     if clear_axes:
         ax.clear()
@@ -892,6 +909,10 @@ def _draw_rosette_on_axes(
             _, p0, p1 = segment
             x = np.array([p0[0], p1[0]], dtype=float)
             y = np.array([p0[1], p1[1]], dtype=float)
+        if max_radius is not None or min_radius is not None:
+            eff_min = min_radius if min_radius is not None else 0.0
+            eff_max = max_radius if max_radius is not None else float("inf")
+            x, y = _apply_radius_clamp(x, y, eff_min, eff_max)
         ax.plot(x, y, color=CURVE_COLOR, linewidth=1.8)
 
     axis_radius = view_radius if view_radius is not None else radius
@@ -930,6 +951,8 @@ def _render_rosette_in_axes(
     view_radius=None,
     polar_grid=False,
     curve_only=False,
+    max_radius=None,
+    min_radius=None,
 ):
     segments, reference_radius, title, reference_label = get_rosette_geometry(
         kind, radius, count, height, extra, phase=phase
@@ -948,6 +971,8 @@ def _render_rosette_in_axes(
         view_radius=view_radius,
         polar_grid=polar_grid,
         curve_only=curve_only,
+        max_radius=max_radius,
+        min_radius=min_radius,
     )
 
 
@@ -1218,6 +1243,8 @@ class RosetteGeneratorApp:
             "Amplitude": {"type": "float", "from": 0.0, "to": 50.0, "resolution": 0.5},
             "Flat Length": {"type": "float", "from": 0.0, "to": 80.0, "resolution": 0.5},
             "Phase": {"type": "float", "from": 0.0, "to": 180.0, "resolution": 0.5, "decimals": 2},
+            "Max Radius": {"type": "float", "from": 0.5, "to": 175.0, "resolution": 0.5},
+            "Min Radius": {"type": "float", "from": 0.0, "to": 175.0, "resolution": 0.5},
         }
 
         if label in slider_specs:
@@ -1452,69 +1479,95 @@ class RosetteGeneratorApp:
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "Dip":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "Arch":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "Concave+Convex":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Split %", default="50")
             self.add_field(4, "Phase", default=p)
+            self.add_field(5, "Max Radius", default=r)
+            self.add_field(6, "Min Radius", default="0")
         elif selected == "Puffy":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "W":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "X + 1":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
             self.add_field(3, "X", default="3")
             self.add_field(4, "Phase", default=p)
+            self.add_field(5, "Max Radius", default=r)
+            self.add_field(6, "Min Radius", default="0")
         elif selected == "Flat":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Phase", default=p)
+            self.add_field(3, "Max Radius", default=r)
+            self.add_field(4, "Min Radius", default="0")
         elif selected == "Lotus":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "A":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Number of Segments", default=n)
             self.add_field(2, "Amplitude", default=a)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "Sine":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
             self.add_field(3, "Phase", default=p)
+            self.add_field(4, "Max Radius", default=r)
+            self.add_field(5, "Min Radius", default="0")
         elif selected == "Bead":
             self.add_field(0, "Outer Radius", default=r)
             self.add_field(1, "Amplitude", default=a)
             self.add_field(2, "Number of Segments", default=n)
             self.add_field(3, "Flat Length", default="8.0")
             self.add_field(4, "Phase", default=p)
+            self.add_field(5, "Max Radius", default=r)
+            self.add_field(6, "Min Radius", default="0")
 
         self._auto_draw_if_enabled()
 
     def _get_selected_parameters(self):
         selected = self.option_var.get()
         phase = float(self.field_vars["Phase"].get()) if "Phase" in self.field_vars else 0.0
+        max_radius = float(self.field_vars["Max Radius"].get()) if "Max Radius" in self.field_vars else None
+        min_radius = float(self.field_vars["Min Radius"].get()) if "Min Radius" in self.field_vars else None
         if selected == "Bump":
             radius = float(self.field_vars["Outer Radius"].get())
             count = int(self.field_vars["Number of Segments"].get())
@@ -1526,6 +1579,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Dip":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1538,6 +1593,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Arch":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1550,6 +1607,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Concave+Convex":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1565,6 +1624,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": split_pct,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Puffy":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1577,6 +1638,8 @@ class RosetteGeneratorApp:
                 "height": offset,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "W":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1589,6 +1652,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "X + 1":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1602,6 +1667,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": x_count,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Flat":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1613,6 +1680,8 @@ class RosetteGeneratorApp:
                 "height": 0.0,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Lotus":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1625,6 +1694,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "A":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1637,6 +1708,8 @@ class RosetteGeneratorApp:
                 "height": height,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Sine":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1649,6 +1722,8 @@ class RosetteGeneratorApp:
                 "height": amplitude,
                 "extra": None,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         if selected == "Bead":
             radius = float(self.field_vars["Outer Radius"].get())
@@ -1662,6 +1737,8 @@ class RosetteGeneratorApp:
                 "height": amplitude,
                 "extra": flat_length,
                 "phase": phase,
+                "max_radius": max_radius,
+                "min_radius": min_radius,
             }
         raise ValueError("Rosette style is not implemented for drawing")
 
@@ -1733,6 +1810,8 @@ class RosetteGeneratorApp:
                 show_legend=show_legend,
                 view_radius=view_radius,
                 polar_grid=self.polar_grid_var.get(),
+                max_radius=config.get("max_radius"),
+                min_radius=config.get("min_radius"),
             )
             return
 
@@ -1887,6 +1966,8 @@ class RosetteGeneratorApp:
                     config["height"],
                     extra=config["extra"],
                     phase=config.get("phase", 0.0),
+                    max_radius=config.get("max_radius"),
+                    min_radius=config.get("min_radius"),
                 )
             messagebox.showinfo("Export Complete", "Saved SVG to:\n{0}".format(path))
         except Exception as exc:
